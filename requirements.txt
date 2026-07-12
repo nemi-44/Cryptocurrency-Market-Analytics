@@ -1,0 +1,5 @@
+boto3>=1.34
+websockets>=12.0
+pyspark>=3.5
+pytest>=8.0
+
