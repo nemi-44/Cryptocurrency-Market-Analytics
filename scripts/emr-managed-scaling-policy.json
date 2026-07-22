@@ -1,0 +1,10 @@
+{
+  "ComputeLimits": {
+    "UnitType": "Instances",
+    "MinimumCapacityUnits": 1,
+    "MaximumCapacityUnits": 4,
+    "MaximumOnDemandCapacityUnits": 4,
+    "MaximumCoreCapacityUnits": 4
+  }
+}
+
