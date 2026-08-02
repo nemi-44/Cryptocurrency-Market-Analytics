@@ -1,0 +1,5 @@
+query_name,query_execution_id,status,result
+event_and_symbol_count,33960d67-1529-4eb9-a695-37ad83971615,SUCCEEDED,"2605586 events; 5 symbols"
+latest_market_prices,2f6af265-cdbd-4fa3-9d6e-1e543c5f9332,SUCCEEDED,"5 current symbol rows"
+trending_coins,94b178f4-3b6f-4d35-aefd-00b8cc322e82,SUCCEEDED,"5 ranked symbol rows"
+abnormal_price_spikes,49e437aa-48bd-4e6a-b830-58c6c0135aa2,SUCCEEDED,"0 rows at absolute z-score >= 3"

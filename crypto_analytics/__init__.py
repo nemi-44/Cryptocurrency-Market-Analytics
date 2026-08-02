@@ -3,7 +3,9 @@
 __all__ = [
     "binance",
     "batch",
+    "historical",
+    "pyspark_batch",
     "scoring",
     "speed",
+    "speed_lambda",
 ]
-

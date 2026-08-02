@@ -55,6 +55,7 @@ class ServingResult:
     price: float
     return_5m_pct: float
     quote_volume_5m: float
+    trade_count_5m: int
     trend_score: float
     spike_zscore: float
     is_spike: bool
@@ -64,6 +65,11 @@ class ServingResult:
     result_type: str
     volume_zscore: float = 0.0
     trade_activity_zscore: float = 0.0
+    batch_mean_return_5m: float = 0.0
+    batch_mean_quote_volume_5m: float = 0.0
+    baseline_sample_count: int = 0
+    baseline_updated_at: str = ""
+    view_type: str = "hybrid"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -72,6 +78,7 @@ class ServingResult:
             "price": self.price,
             "return_5m_pct": self.return_5m_pct,
             "quote_volume_5m": self.quote_volume_5m,
+            "trade_count_5m": self.trade_count_5m,
             "trend_score": self.trend_score,
             "spike_zscore": self.spike_zscore,
             "is_spike": self.is_spike,
@@ -81,6 +88,11 @@ class ServingResult:
             "result_type": self.result_type,
             "volume_zscore": self.volume_zscore,
             "trade_activity_zscore": self.trade_activity_zscore,
+            "batch_mean_return_5m": self.batch_mean_return_5m,
+            "batch_mean_quote_volume_5m": self.batch_mean_quote_volume_5m,
+            "baseline_sample_count": self.baseline_sample_count,
+            "baseline_updated_at": self.baseline_updated_at,
+            "view_type": self.view_type,
         }
 
 
@@ -130,6 +142,7 @@ def score_window(
         price=end_price,
         return_5m_pct=return_pct,
         quote_volume_5m=quote_volume_5m,
+        trade_count_5m=trade_count_5m,
         trend_score=trend_score,
         spike_zscore=return_zscore,
         is_spike=is_spike,
@@ -139,5 +152,8 @@ def score_window(
         result_type="spike" if is_spike else "trend",
         volume_zscore=volume_zscore,
         trade_activity_zscore=trade_activity_zscore,
+        batch_mean_return_5m=baseline.mean_return_5m,
+        batch_mean_quote_volume_5m=baseline.mean_quote_volume_5m,
+        baseline_sample_count=baseline.sample_count,
+        baseline_updated_at=baseline.updated_at,
     )
-

@@ -1,6 +1,6 @@
 param(
   [string]$StackName = "crypto-analytics",
-  [string]$Region = "eu-west-1"
+  [string]$Region = "us-east-1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,4 +32,3 @@ aws s3 cp "$buildDir\index.html" "s3://$bucketName/index.html" `
 
 Write-Host "Uploaded static dashboard to s3://$bucketName/index.html"
 Write-Host "Open the DashboardWebsiteUrl CloudFormation output."
-

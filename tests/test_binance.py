@@ -1,7 +1,12 @@
 import json
 import unittest
 
-from crypto_analytics.binance import is_usdt_spot_symbol, normalize_timestamp_ms, parse_ticker_message
+from crypto_analytics.binance import (
+    build_agg_trade_url,
+    is_usdt_spot_symbol,
+    normalize_timestamp_ms,
+    parse_market_message,
+)
 
 
 class BinanceParsingTests(unittest.TestCase):
@@ -14,20 +19,31 @@ class BinanceParsingTests(unittest.TestCase):
         self.assertFalse(is_usdt_spot_symbol("BTCBUSD"))
         self.assertFalse(is_usdt_spot_symbol("ETHUPUSDT"))
 
-    def test_parse_ticker_message_filters_and_normalizes(self):
+    def test_parse_aggregate_trade_filters_and_normalizes(self):
         message = json.dumps(
-            [
-                {"e": "1hTicker", "E": 1735689600000, "s": "BTCUSDT", "o": "100", "h": "110", "l": "90", "c": "105", "q": "12000", "n": 30},
-                {"e": "1hTicker", "E": 1735689600000, "s": "ETHBTC", "o": "1", "h": "1", "l": "1", "c": "1", "q": "1", "n": 1},
-            ]
+            {
+                "stream": "btcusdt@aggTrade",
+                "data": {
+                    "e": "aggTrade",
+                    "E": 1735689600000,
+                    "s": "BTCUSDT",
+                    "a": 123,
+                    "p": "105",
+                    "q": "2.5",
+                },
+            }
         )
-        records = parse_ticker_message(message, ingest_time=1735689600500)
+        records = parse_market_message(message, ingest_time=1735689600500)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].symbol, "BTCUSDT")
-        self.assertEqual(records[0].quote_volume_1h, 12000.0)
+        self.assertEqual(records[0].quote_volume, 262.5)
+        self.assertEqual(records[0].trade_id, 123)
         self.assertEqual(records[0].ingest_time, 1735689600500)
+
+    def test_combined_url_contains_one_stream_per_symbol(self):
+        url = build_agg_trade_url({"ETHUSDT", "BTCUSDT"})
+        self.assertIn("btcusdt%40aggTrade%2Fethusdt%40aggTrade", url)
 
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,0 +1,4 @@
+data_source,environment,target_ingestion_rate,processed_records,elapsed_seconds,achieved_throughput,p50_processing_latency_ms,p95_processing_latency_ms,p99_processing_latency_ms,p95_schedule_lag_ms,refreshes,symbols
+synthetic-controlled-load,local,100,300,2.99291,100.24,0.031813,0.054602,0.371934,2.3528,3,32
+synthetic-controlled-load,local,500,1500,2.99878,500.2,0.009083,0.022504,0.361014,0.494181,15,32
+synthetic-controlled-load,local,1000,3000,3.000748,999.75,0.006125,0.014335,0.200155,0.25264,30,32

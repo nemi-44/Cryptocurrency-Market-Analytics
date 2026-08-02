@@ -1,4 +1,4 @@
-"""EMR PySpark job for historical five-minute baseline calculation."""
+"""EMR PySpark full-history batch view over Firehose JSON Lines archives."""
 
 from __future__ import annotations
 
@@ -7,62 +7,104 @@ from typing import Sequence
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="PySpark baseline job for Binance 1m klines.")
-    parser.add_argument("--input", required=True, help="S3/local path to Binance kline CSV files.")
+    parser = argparse.ArgumentParser(description="PySpark batch view for canonical market events.")
+    parser.add_argument("--input", required=True, help="S3/local raw JSON Lines path, including GZIP files.")
     parser.add_argument("--output", required=True, help="S3/local output path for baseline Parquet.")
-    parser.add_argument("--json-output", help="Optional S3/local output path for JSONL baselines used by the speed consumer.")
+    parser.add_argument("--json-output", help="Optional JSON baseline path consumed by the speed layer.")
+    parser.add_argument(
+        "--batch-view-output",
+        help="Optional Parquet path for all complete historical five-minute windows.",
+    )
+    parser.add_argument("--window", default="5 minutes")
+    parser.add_argument("--minimum-window-records", type=int, default=2)
     args = parser.parse_args(argv)
 
-    from pyspark.sql import SparkSession, Window
+    from pyspark.sql import SparkSession
     from pyspark.sql import functions as F
-    from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
+    from pyspark.sql.types import (
+        DoubleType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+    )
 
-    spark = SparkSession.builder.appName("crypto-batch-baselines").getOrCreate()
+    spark = SparkSession.builder.appName("crypto-full-history-batch-view").getOrCreate()
     schema = StructType(
         [
-            StructField("open_time_raw", LongType(), False),
-            StructField("open", DoubleType(), False),
-            StructField("high", DoubleType(), False),
-            StructField("low", DoubleType(), False),
-            StructField("close", DoubleType(), False),
-            StructField("volume", DoubleType(), False),
-            StructField("close_time_raw", LongType(), False),
+            StructField("schema_version", LongType(), True),
+            StructField("event_type", StringType(), True),
+            StructField("symbol", StringType(), False),
+            StructField("base_asset", StringType(), True),
+            StructField("event_time", LongType(), False),
+            StructField("last_price", DoubleType(), False),
             StructField("quote_volume", DoubleType(), False),
             StructField("trade_count", LongType(), False),
-            StructField("taker_buy_base_volume", DoubleType(), True),
-            StructField("taker_buy_quote_volume", DoubleType(), True),
-            StructField("ignore", StringType(), True),
+            StructField("ingest_time", LongType(), False),
+            StructField("trade_id", LongType(), True),
         ]
     )
 
     raw = (
-        spark.read.option("header", "false")
+        spark.read.option("recursiveFileLookup", "true")
         .schema(schema)
-        .csv(args.input)
-        .withColumn("source_file", F.input_file_name())
+        .json(args.input)
     )
-    symbol = F.regexp_extract("source_file", r"([A-Z0-9]+)-1m-\d{4}-\d{2}-\d{2}", 1)
-    normalized = raw.withColumn("symbol", symbol).withColumn(
-        "open_time",
-        F.when(F.col("open_time_raw") > F.lit(99_999_999_999_999), F.col("open_time_raw") / F.lit(1000)).otherwise(
-            F.col("open_time_raw")
-        ),
+    valid = (
+        raw.where(F.col("symbol").isNotNull())
+        .where(F.col("event_time").isNotNull())
+        .where(F.col("last_price") > 0)
+        .where(F.col("quote_volume") >= 0)
+        # Be defensive with pre-normalization Binance Vision archives, whose
+        # recent timestamps can be microseconds rather than milliseconds.
+        .withColumn(
+            "event_time",
+            F.when(
+                F.abs(F.col("event_time")) >= F.lit(100_000_000_000_000),
+                (F.col("event_time") / F.lit(1000)).cast("long"),
+            ).otherwise(F.col("event_time")),
+        )
+        .withColumn(
+            "ingest_time",
+            F.when(
+                F.abs(F.col("ingest_time")) >= F.lit(100_000_000_000_000),
+                (F.col("ingest_time") / F.lit(1000)).cast("long"),
+            ).otherwise(F.col("ingest_time")),
+        )
+        .withColumn(
+            "event_timestamp",
+            F.to_timestamp(F.from_unixtime(F.col("event_time") / F.lit(1000.0))),
+        )
     )
 
-    ordered = Window.partitionBy("symbol").orderBy("open_time")
-    five_rows = ordered.rowsBetween(0, 4)
-    samples = (
-        normalized.withColumn("rows_in_window", F.count("*").over(five_rows))
-        .withColumn("close_5m", F.last("close").over(five_rows))
-        .withColumn("quote_volume_5m", F.sum("quote_volume").over(five_rows))
-        .withColumn("trade_count_5m", F.sum("trade_count").over(five_rows))
-        .where(F.col("rows_in_window") == 5)
-        .where(F.col("open") > 0)
-        .withColumn("return_5m", ((F.col("close_5m") / F.col("open")) - F.lit(1.0)) * F.lit(100.0))
+    windows = (
+        valid.groupBy("symbol", F.window("event_timestamp", args.window).alias("event_window"))
+        .agg(
+            F.min_by("last_price", "event_time").alias("first_price"),
+            F.max_by("last_price", "event_time").alias("last_price"),
+            F.sum("quote_volume").alias("quote_volume_5m"),
+            F.sum("trade_count").alias("trade_count_5m"),
+            F.count("*").alias("record_count"),
+            F.min("event_time").alias("first_event_time"),
+            F.max("event_time").alias("last_event_time"),
+            F.max("ingest_time").alias("last_ingest_time"),
+        )
+        .where(F.col("record_count") >= args.minimum_window_records)
+        .withColumn(
+            "return_5m",
+            ((F.col("last_price") / F.col("first_price")) - F.lit(1.0)) * F.lit(100.0),
+        )
+        .withColumn("window_start", (F.col("event_window.start").cast("double") * 1000).cast("long"))
+        .withColumn("window_end", (F.col("event_window.end").cast("double") * 1000).cast("long"))
+        .withColumn("latency_ms", F.greatest(F.lit(0), F.col("last_ingest_time") - F.col("last_event_time")))
+        .drop("event_window")
     )
+
+    if args.batch_view_output:
+        windows.write.mode("overwrite").partitionBy("symbol").parquet(args.batch_view_output)
 
     baselines = (
-        samples.groupBy("symbol")
+        windows.groupBy("symbol")
         .agg(
             F.avg("return_5m").alias("mean_return_5m"),
             F.stddev_samp("return_5m").alias("std_return_5m"),
@@ -72,10 +114,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             F.count("*").alias("sample_count"),
             F.avg("trade_count_5m").alias("mean_trade_count_5m"),
             F.stddev_samp("trade_count_5m").alias("std_trade_count_5m"),
-            F.current_timestamp().alias("updated_at"),
         )
-        .fillna({"std_return_5m": 0.0, "std_quote_volume_5m": 0.0, "std_trade_count_5m": 0.0})
+        .fillna(
+            {
+                "std_return_5m": 0.0,
+                "std_quote_volume_5m": 0.0,
+                "std_trade_count_5m": 0.0,
+            }
+        )
+        .withColumn("updated_at", F.current_timestamp().cast("string"))
+        .withColumn("view_type", F.lit("batch_baseline"))
+        .withColumn("schema_version", F.lit(2))
     )
+
     baselines.write.mode("overwrite").parquet(args.output)
     if args.json_output:
         baselines.coalesce(1).write.mode("overwrite").json(args.json_output)

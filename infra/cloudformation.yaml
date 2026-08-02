@@ -5,11 +5,56 @@ Parameters:
   ProjectName:
     Type: String
     Default: crypto-analytics
-  KinesisShardCount:
+  RealtimeSubnetId:
+    Type: String
+    Default: ""
+    Description: Optional Learner Lab subnet ID. Leave empty to skip the realtime EC2 node.
+  RealtimeAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  RealtimeInstanceType:
+    Type: String
+    Default: t3.small
+  CodeArchiveKey:
+    Type: String
+    Default: artifacts/crypto-analytics.zip
+  BaselineJsonPrefix:
+    Type: String
+    Default: baselines/latest/
+  AnalyticsDatabaseName:
+    Type: String
+    Default: crypto_analytics
+    AllowedPattern: "[a-z0-9_]+"
+    Description: Glue Data Catalog database used by Athena.
+  MarketSymbols:
+    Type: String
+    Default: BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT
+  SpeedLambdaCodeKey:
+    Type: String
+    Default: ""
+    Description: S3 key for the application ZIP. Leave empty until package_and_upload.sh has run.
+  SpeedLambdaMemory:
     Type: Number
-    Default: 2
-    MinValue: 1
-    MaxValue: 10
+    Default: 512
+    MinValue: 256
+    MaxValue: 2048
+  LabRoleArn:
+    Type: String
+    Default: ""
+    Description: Existing Learner Lab role ARN. Leave empty to create project-specific roles.
+  LabInstanceProfileArn:
+    Type: String
+    Default: ""
+    Description: Existing Learner Lab instance-profile ARN used when LabRoleArn is provided.
+
+Conditions:
+  DeployRealtimeNode: !Not [!Equals [!Ref RealtimeSubnetId, ""]]
+  DeployDistributedSpeed: !Not [!Equals [!Ref SpeedLambdaCodeKey, ""]]
+  UseLabRole: !Not [!Equals [!Ref LabRoleArn, ""]]
+  CreateProjectRoles: !Equals [!Ref LabRoleArn, ""]
+  CreateDistributedSpeedRole: !And
+    - !Condition DeployDistributedSpeed
+    - !Condition CreateProjectRoles
 
 Resources:
   RawBucket:
@@ -52,7 +97,8 @@ Resources:
     Properties:
       Name: !Sub "${ProjectName}-market-events"
       RetentionPeriodHours: 24
-      ShardCount: !Ref KinesisShardCount
+      StreamModeDetails:
+        StreamMode: ON_DEMAND
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -83,12 +129,50 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  SpeedStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: symbol
+          AttributeType: S
+      KeySchema:
+        - AttributeName: symbol
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  LatestHybridViewTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: symbol
+          AttributeType: S
+      KeySchema:
+        - AttributeName: symbol
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
       Tags:
         - Key: Project
           Value: !Ref ProjectName
 
   FirehoseRole:
     Type: AWS::IAM::Role
+    Condition: CreateProjectRoles
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -129,10 +213,10 @@ Resources:
       DeliveryStreamType: KinesisStreamAsSource
       KinesisStreamSourceConfiguration:
         KinesisStreamARN: !GetAtt MarketDataStream.Arn
-        RoleARN: !GetAtt FirehoseRole.Arn
+        RoleARN: !If [UseLabRole, !Ref LabRoleArn, !GetAtt FirehoseRole.Arn]
       ExtendedS3DestinationConfiguration:
         BucketARN: !GetAtt RawBucket.Arn
-        RoleARN: !GetAtt FirehoseRole.Arn
+        RoleARN: !If [UseLabRole, !Ref LabRoleArn, !GetAtt FirehoseRole.Arn]
         CompressionFormat: GZIP
         Prefix: "raw/date=!{timestamp:yyyy-MM-dd}/hour=!{timestamp:HH}/symbol=!{partitionKeyFromQuery:symbol}/"
         ErrorOutputPrefix: "errors/!{firehose:error-output-type}/date=!{timestamp:yyyy-MM-dd}/"
@@ -153,6 +237,7 @@ Resources:
 
   AppRole:
     Type: AWS::IAM::Role
+    Condition: CreateProjectRoles
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -196,12 +281,170 @@ Resources:
 
   AppInstanceProfile:
     Type: AWS::IAM::InstanceProfile
+    Condition: CreateProjectRoles
     Properties:
       Roles:
         - !Ref AppRole
 
+  RealtimeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: DeployRealtimeNode
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref RealtimeAmiId
+        InstanceType: !Ref RealtimeInstanceType
+        IamInstanceProfile:
+          Arn: !If
+            - UseLabRole
+            - !Ref LabInstanceProfileArn
+            - !GetAtt AppInstanceProfile.Arn
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euo pipefail
+            dnf install -y python3-pip unzip
+            install -d -m 0755 /opt/crypto-analytics
+            until aws s3 cp "s3://${RawBucket}/${CodeArchiveKey}" /tmp/crypto-analytics.zip --region "${AWS::Region}"; do
+              sleep 30
+            done
+            unzip -o /tmp/crypto-analytics.zip -d /opt/crypto-analytics
+            python3 -m pip install -r /opt/crypto-analytics/requirements.txt
+
+            cat >/etc/systemd/system/crypto-producer.service <<'UNIT'
+            [Unit]
+            Description=Crypto aggregate-trade producer
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/crypto-analytics
+            Environment=AWS_REGION=${AWS::Region}
+            Environment=KINESIS_STREAM_NAME=${MarketDataStream}
+            Environment=MARKET_SYMBOLS=${MarketSymbols}
+            ExecStart=/usr/bin/python3 -m crypto_analytics.binance
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+
+            systemctl daemon-reload
+            systemctl enable --now crypto-producer.service
+
+  RealtimeAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: DeployRealtimeNode
+    Properties:
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier:
+        - !Ref RealtimeSubnetId
+      LaunchTemplate:
+        LaunchTemplateId: !Ref RealtimeLaunchTemplate
+        Version: !GetAtt RealtimeLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-realtime"
+          PropagateAtLaunch: true
+        - Key: Project
+          Value: !Ref ProjectName
+          PropagateAtLaunch: true
+
+  DistributedSpeedRole:
+    Type: AWS::IAM::Role
+    Condition: CreateDistributedSpeedRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: distributed-speed-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - kinesis:DescribeStream
+                  - kinesis:DescribeStreamSummary
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:ListShards
+                Resource: !GetAtt MarketDataStream.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt SpeedStateTable.Arn
+                  - !GetAtt LatestHybridViewTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt RawBucket.Arn
+                  - !Sub "${RawBucket.Arn}/*"
+
+  DistributedSpeedFunction:
+    Type: AWS::Lambda::Function
+    Condition: DeployDistributedSpeed
+    Properties:
+      FunctionName: !Sub "${ProjectName}-distributed-speed"
+      Runtime: python3.11
+      Handler: crypto_analytics.speed_lambda.handler
+      Role: !If
+        - UseLabRole
+        - !Ref LabRoleArn
+        - !GetAtt DistributedSpeedRole.Arn
+      Timeout: 60
+      MemorySize: !Ref SpeedLambdaMemory
+      Environment:
+        Variables:
+          BASELINE_S3_URI: !Sub "s3://${RawBucket}/${BaselineJsonPrefix}"
+          SPEED_STATE_TABLE_NAME: !Ref SpeedStateTable
+          LATEST_VIEW_TABLE_NAME: !Ref LatestHybridViewTable
+          WINDOW_SECONDS: "300"
+          STATE_BUCKET_MS: "1000"
+          BASELINE_REFRESH_SECONDS: "300"
+      Code:
+        S3Bucket: !Ref RawBucket
+        S3Key: !Ref SpeedLambdaCodeKey
+
+  DistributedSpeedEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: DeployDistributedSpeed
+    Properties:
+      EventSourceArn: !GetAtt MarketDataStream.Arn
+      FunctionName: !Ref DistributedSpeedFunction
+      StartingPosition: LATEST
+      BatchSize: 500
+      MaximumBatchingWindowInSeconds: 1
+      ParallelizationFactor: 1
+      BisectBatchOnFunctionError: true
+      MaximumRetryAttempts: -1
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
   DashboardApiRole:
     Type: AWS::IAM::Role
+    Condition: CreateProjectRoles
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -228,6 +471,7 @@ Resources:
                 Resource:
                   - !GetAtt ServingTable.Arn
                   - !Sub "${ServingTable.Arn}/index/*"
+                  - !GetAtt LatestHybridViewTable.Arn
 
   DashboardApiFunction:
     Type: AWS::Lambda::Function
@@ -235,12 +479,16 @@ Resources:
       FunctionName: !Sub "${ProjectName}-dashboard-api"
       Runtime: python3.11
       Handler: index.handler
-      Role: !GetAtt DashboardApiRole.Arn
+      Role: !If
+        - UseLabRole
+        - !Ref LabRoleArn
+        - !GetAtt DashboardApiRole.Arn
       Timeout: 10
       MemorySize: 256
       Environment:
         Variables:
           DYNAMODB_TABLE_NAME: !Ref ServingTable
+          LATEST_VIEW_TABLE_NAME: !Ref LatestHybridViewTable
       Code:
         ZipFile: |
           import json
@@ -273,8 +521,34 @@ Resources:
               converted = [decimal_to_json(item) for item in items]
               if not converted:
                   return {"trending": [], "spikes": [], "latest_window": None}
-              latest_window = max(str(item.get("window_end", "")) for item in converted)
-              latest = [item for item in converted if str(item.get("window_end", "")) == latest_window]
+              latest_number = max(int(item.get("window_end", 0)) for item in converted)
+              latest_window = str(latest_number)
+              latest = [
+                  item
+                  for item in converted
+                  if int(item.get("window_end", 0)) >= latest_number - 30000
+              ]
+              if any(item.get("view_type") == "hybrid" and "result_key" not in item for item in latest):
+                  unique = {
+                      str(item["symbol"]): item
+                      for item in latest
+                      if item.get("view_type") == "hybrid"
+                  }
+                  trending = sorted(
+                      unique.values(),
+                      key=lambda item: float(item.get("trend_score", 0.0)),
+                      reverse=True,
+                  )
+                  spikes = sorted(
+                      [item for item in unique.values() if item.get("is_spike")],
+                      key=lambda item: abs(float(item.get("spike_zscore", 0.0))),
+                      reverse=True,
+                  )
+                  for rank, item in enumerate(trending, start=1):
+                      item["rank"] = rank
+                      item["result_type"] = "trend"
+                  return {"trending": trending, "spikes": spikes, "latest_window": latest_window}
+              latest = [item for item in latest if str(item.get("window_end", "")) == latest_window]
               trending = sorted(
                   [item for item in latest if item.get("result_type") == "trend"],
                   key=lambda item: int(item.get("rank", 9999)),
@@ -291,30 +565,47 @@ Resources:
                   return response(204, {})
 
               import boto3
-              table = boto3.resource("dynamodb").Table(os.environ["DYNAMODB_TABLE_NAME"])
-              items = []
-              scan_kwargs = {"Limit": 500}
-              while True:
-                  result = table.scan(**scan_kwargs)
-                  items.extend(result.get("Items", []))
-                  if "LastEvaluatedKey" not in result or len(items) >= 500:
-                      break
-                  scan_kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
-              return response(200, latest_payload_from_items(items))
+              from boto3.dynamodb.conditions import Key
+              dynamodb = boto3.resource("dynamodb")
+              latest_items = dynamodb.Table(os.environ["LATEST_VIEW_TABLE_NAME"]).scan(Limit=500).get("Items", [])
+              if latest_items:
+                  return response(200, latest_payload_from_items(latest_items))
+              table = dynamodb.Table(os.environ["DYNAMODB_TABLE_NAME"])
+              trend_result = table.query(
+                  IndexName="result-type-index",
+                  KeyConditionExpression=Key("result_type").eq("trend"),
+                  ScanIndexForward=False,
+                  Limit=100,
+              )
+              trends = trend_result.get("Items", [])
+              if not trends:
+                  return response(200, latest_payload_from_items([]))
+              latest_window = max(str(item["window_end"]) for item in trends)
+              latest_trends = [
+                  item for item in trends if str(item.get("window_end", "")) == latest_window
+              ]
+              spike_result = table.query(
+                  IndexName="result-type-index",
+                  KeyConditionExpression=(
+                      Key("result_type").eq("spike") & Key("window_end").eq(latest_window)
+                  ),
+                  ScanIndexForward=False,
+                  Limit=100,
+              )
+              return response(
+                  200,
+                  latest_payload_from_items(latest_trends + spike_result.get("Items", [])),
+              )
 
   DashboardHttpApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
       Name: !Sub "${ProjectName}-dashboard-api"
       ProtocolType: HTTP
-      CorsConfiguration:
-        AllowOrigins:
-          - "*"
-        AllowMethods:
-          - GET
-          - OPTIONS
-        AllowHeaders:
-          - content-type
+      # CORS headers are returned by DashboardApiFunction. API Gateway's
+      # managed CORS rejects the "null" origin used by directly opened file://
+      # pages, while forwarding the Lambda wildcard header supports both the
+      # local preview and the deployed HTTPS dashboard.
 
   DashboardApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -346,6 +637,125 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DashboardHttpApi}/*/*/latest"
 
+  AnalyticsDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref AnalyticsDatabaseName
+        Description: Catalog for real Binance events and EMR batch views.
+
+  RawMarketEventsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AnalyticsDatabase
+      TableInput:
+        Name: raw_market_events
+        Description: Canonical Binance aggregate-trade events archived by Firehose and backfill jobs.
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+          compressionType: gzip
+          EXTERNAL: "TRUE"
+          typeOfData: file
+        StorageDescriptor:
+          Location: !Sub "s3://${RawBucket}/raw/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Columns:
+            - Name: schema_version
+              Type: bigint
+            - Name: event_type
+              Type: string
+            - Name: symbol
+              Type: string
+            - Name: base_asset
+              Type: string
+            - Name: event_time
+              Type: bigint
+            - Name: last_price
+              Type: double
+            - Name: quote_volume
+              Type: double
+            - Name: trade_count
+              Type: bigint
+            - Name: ingest_time
+              Type: bigint
+            - Name: trade_id
+              Type: bigint
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+            Parameters:
+              ignore.malformed.json: "true"
+
+  BatchWindowsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AnalyticsDatabase
+      TableInput:
+        Name: batch_windows
+        Description: EMR-generated five-minute cryptocurrency windows stored as partitioned Parquet.
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          EXTERNAL: "TRUE"
+          projection.enabled: "true"
+          projection.symbol.type: enum
+          projection.symbol.values: !Ref MarketSymbols
+          storage.location.template: !Sub "s3://${RawBucket}/batch-windows/symbol=${!symbol}/"
+        PartitionKeys:
+          - Name: symbol
+            Type: string
+        StorageDescriptor:
+          Location: !Sub "s3://${RawBucket}/batch-windows/"
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          Columns:
+            - Name: first_price
+              Type: double
+            - Name: last_price
+              Type: double
+            - Name: quote_volume_5m
+              Type: double
+            - Name: trade_count_5m
+              Type: bigint
+            - Name: record_count
+              Type: bigint
+            - Name: first_event_time
+              Type: bigint
+            - Name: last_event_time
+              Type: bigint
+            - Name: last_ingest_time
+              Type: bigint
+            - Name: return_5m
+              Type: double
+            - Name: window_start
+              Type: bigint
+            - Name: window_end
+              Type: bigint
+            - Name: latency_ms
+              Type: bigint
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+
+  AnalyticsWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub "${ProjectName}-athena"
+      Description: SQL query layer for real market events and EMR batch views.
+      State: ENABLED
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${RawBucket}/athena-results/"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
 Outputs:
   RawBucketName:
     Value: !Ref RawBucket
@@ -353,13 +763,33 @@ Outputs:
     Value: !Ref MarketDataStream
   DynamoDbTableName:
     Value: !Ref ServingTable
+  SpeedStateTableName:
+    Value: !Ref SpeedStateTable
+  LatestHybridViewTableName:
+    Value: !Ref LatestHybridViewTable
+  DistributedSpeedFunctionName:
+    Condition: DeployDistributedSpeed
+    Value: !Ref DistributedSpeedFunction
   AppInstanceProfile:
-    Value: !Ref AppInstanceProfile
+    Value: !If
+      - UseLabRole
+      - !Ref LabInstanceProfileArn
+      - !Ref AppInstanceProfile
+  RealtimeAutoScalingGroupName:
+    Condition: DeployRealtimeNode
+    Value: !Ref RealtimeAutoScalingGroup
   DashboardBucketName:
     Value: !Ref DashboardBucket
   DashboardWebsiteUrl:
-    Value: !GetAtt DashboardBucket.WebsiteURL
+    Description: HTTPS URL for the public dashboard entry page.
+    Value: !Sub "https://${DashboardBucket.RegionalDomainName}/index.html"
   ApiEndpoint:
     Value: !Sub "https://${DashboardHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   ApiLatestUrl:
     Value: !Sub "https://${DashboardHttpApi}.execute-api.${AWS::Region}.amazonaws.com/latest"
+  AthenaDatabaseName:
+    Value: !Ref AnalyticsDatabase
+  AthenaWorkGroupName:
+    Value: !Ref AnalyticsWorkGroup
+  AthenaResultsLocation:
+    Value: !Sub "s3://${RawBucket}/athena-results/"

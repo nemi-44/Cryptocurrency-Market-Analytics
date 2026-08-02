@@ -25,7 +25,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["headers"]["Access-Control-Allow-Origin"], "*")
         self.assertEqual(json.loads(result["body"]), {"ok": True})
 
+    def test_latest_hybrid_rows_are_ranked_across_fresh_symbols(self):
+        payload = latest_payload_from_items(
+            [
+                {
+                    "window_end": "100000",
+                    "symbol": "BTCUSDT",
+                    "view_type": "hybrid",
+                    "trend_score": Decimal("1.5"),
+                    "spike_zscore": Decimal("4.0"),
+                    "is_spike": True,
+                },
+                {
+                    "window_end": "99000",
+                    "symbol": "ETHUSDT",
+                    "view_type": "hybrid",
+                    "trend_score": Decimal("2.5"),
+                    "spike_zscore": Decimal("1.0"),
+                    "is_spike": False,
+                },
+            ]
+        )
+        self.assertEqual([item["symbol"] for item in payload["trending"]], ["ETHUSDT", "BTCUSDT"])
+        self.assertEqual([item["symbol"] for item in payload["spikes"]], ["BTCUSDT"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

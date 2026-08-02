@@ -21,14 +21,19 @@ class SpeedLayerTests(unittest.TestCase):
             std_trade_count_5m=10.0,
         )
         aggregator = SlidingWindowAggregator({"BTCUSDT": baseline}, window_seconds=300)
-        aggregator.add({"symbol": "BTCUSDT", "event_time": 1000, "last_price": 100.0, "quote_volume_1h": 10_000.0, "trade_count_1h": 100, "ingest_time": 1000})
-        aggregator.add({"symbol": "BTCUSDT", "event_time": 301000, "last_price": 104.0, "quote_volume_1h": 25_000.0, "trade_count_1h": 230, "ingest_time": 301500})
+        first = {"symbol": "BTCUSDT", "event_time": 1000, "last_price": 100.0, "quote_volume": 10_000.0, "trade_count": 100, "ingest_time": 1000, "trade_id": 1}
+        second = {"symbol": "BTCUSDT", "event_time": 301000, "last_price": 104.0, "quote_volume": 15_000.0, "trade_count": 130, "ingest_time": 301500, "trade_id": 2}
+        self.assertTrue(aggregator.add(first))
+        self.assertFalse(aggregator.add(first))
+        self.assertTrue(aggregator.add(second))
 
         trending = aggregator.top_trending(1)
         spikes = aggregator.abnormal_spikes(1)
 
         self.assertEqual(len(trending), 1)
         self.assertEqual(trending[0].symbol, "BTCUSDT")
+        self.assertEqual(trending[0].quote_volume_5m, 25_000.0)
+        self.assertEqual(trending[0].view_type, "hybrid")
         self.assertTrue(spikes[0].is_spike)
 
     def test_load_baselines_accepts_spark_json_directory(self):

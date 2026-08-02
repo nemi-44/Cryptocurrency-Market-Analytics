@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from decimal import Decimal
 from pathlib import Path
 from collections.abc import Mapping
@@ -30,19 +31,27 @@ class LocalServingWriter:
 
 
 class DynamoDbServingWriter:
-    def __init__(self, table_name: str, region_name: str | None = None) -> None:
+    def __init__(
+        self,
+        table_name: str,
+        region_name: str | None = None,
+        retention_seconds: int = 86_400,
+    ) -> None:
         import boto3
 
         self.table = boto3.resource("dynamodb", region_name=region_name).Table(table_name)
+        self.retention_seconds = retention_seconds
 
     def write(self, trending: list[ServingResult], spikes: list[ServingResult]) -> None:
         with self.table.batch_writer() as batch:
+            expires_at = int(time.time()) + self.retention_seconds
             for rank, item in enumerate(trending, start=1):
                 record = to_dynamodb_item(item.to_dict())
                 record["result_type"] = "trend"
                 record["result_key"] = f"trend#{item.symbol}"
                 record["rank"] = rank
                 record["window_end"] = str(record["window_end"])
+                record["expires_at"] = expires_at
                 batch.put_item(Item=record)
             for rank, item in enumerate(spikes, start=1):
                 record = to_dynamodb_item(item.to_dict())
@@ -50,6 +59,7 @@ class DynamoDbServingWriter:
                 record["result_key"] = f"spike#{item.symbol}"
                 record["rank"] = rank
                 record["window_end"] = str(record["window_end"])
+                record["expires_at"] = expires_at
                 batch.put_item(Item=record)
 
 

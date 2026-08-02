@@ -74,7 +74,7 @@ class KinesisPollingConsumer:
 
 def run_consumer(
     *,
-    baseline_path: Path,
+    baseline_path: str,
     writer: ServingWriter,
     stream_name: str,
     region: str,
@@ -83,7 +83,7 @@ def run_consumer(
     max_records: int | None,
 ) -> None:
     analytics = load_analytics_config()
-    baselines = load_baselines(baseline_path)
+    baselines = load_baselines(baseline_path, region_name=region)
     aggregator = SlidingWindowAggregator(
         baselines=baselines,
         window_seconds=analytics.window_seconds,
@@ -98,16 +98,18 @@ def run_consumer(
         aggregator.add(record)
         seen += 1
         if time.monotonic() >= next_publish:
-            writer.write(aggregator.top_trending(top_n), aggregator.abnormal_spikes(top_n))
+            trending, spikes = aggregator.serving_views(top_n)
+            writer.write(trending, spikes)
             next_publish = time.monotonic() + refresh_seconds
         if max_records and seen >= max_records:
-            writer.write(aggregator.top_trending(top_n), aggregator.abnormal_spikes(top_n))
+            trending, spikes = aggregator.serving_views(top_n)
+            writer.write(trending, spikes)
             return
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Consume Kinesis events and maintain five-minute serving views.")
-    parser.add_argument("--baseline-json", type=Path, required=True)
+    parser.add_argument("--baseline-json", required=True, help="Local baseline path or s3:// URI.")
     parser.add_argument("--stream-name")
     parser.add_argument("--region")
     parser.add_argument("--output-json", type=Path, help="Write local serving JSON instead of DynamoDB.")
@@ -141,4 +143,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

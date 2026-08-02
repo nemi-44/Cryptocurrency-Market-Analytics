@@ -1,0 +1,9 @@
+metric,period_1,period_2,period_3,summary_value,unit
+Kinesis IncomingRecords,8250,39750,243,48243,Count
+Lambda Invocations,113,138,44,295,Count
+Lambda Errors,0,0,0,0,Count
+Lambda Throttles,0,0,0,0,Count
+Lambda Duration p95,578.080,579.723,511.860,579.723,Milliseconds
+Lambda Duration p99,592.916,601.435,543.191,601.435,Milliseconds
+Lambda IteratorAge average,564.319,1187.667,814.597,1187.667,Milliseconds
+Lambda IteratorAge maximum,1504,1881,1989,1989,Milliseconds

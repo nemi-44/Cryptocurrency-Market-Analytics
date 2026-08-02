@@ -37,6 +37,8 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(result.is_spike)
         self.assertEqual(result.latency_ms, 500)
         self.assertGreater(result.trend_score, 0)
+        self.assertEqual(result.baseline_sample_count, 100)
+        self.assertEqual(result.view_type, "hybrid")
 
     def test_low_liquidity_is_filtered(self):
         low_liquidity = SymbolBaseline(
@@ -65,4 +67,3 @@ class ScoringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

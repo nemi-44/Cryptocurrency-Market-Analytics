@@ -1,0 +1,4 @@
+data_source,environment,worker_count,repeats,input_records,symbols,median_runtime_seconds,speedup,parallel_efficiency,records_per_second,baseline_count
+synthetic,local,1,3,200000,32,0.059365,1.0,1.0,3368997.88,32
+synthetic,local,2,3,200000,32,0.17379,0.3416,0.1708,1150817.23,32
+synthetic,local,4,3,200000,32,0.171623,0.3459,0.0865,1165344.97,32

@@ -137,6 +137,22 @@
         color: #b42318;
         font-weight: 650;
       }
+
+      .benchmark-panel {
+        margin-top: 28px;
+      }
+
+      .benchmark-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 14px 0;
+      }
+
+      .benchmark-links a {
+        color: #0369a1;
+        font-weight: 650;
+      }
     </style>
   </head>
   <body>
@@ -164,15 +180,46 @@
           <div class="table-wrap" id="spikeTable"></div>
         </section>
       </div>
+
+      <section class="benchmark-panel">
+        <h2>AWS Performance Benchmarks</h2>
+        <p id="benchmarkStatus" class="status">Loading real AWS experiment results...</p>
+        <div class="benchmark-links">
+          <a href="benchmarks/emr_benchmark_runs.csv">Raw EMR runs (CSV)</a>
+          <a href="benchmarks/emr_benchmark_summary.csv">EMR summary (CSV)</a>
+          <a href="benchmarks/speed_load_benchmark.csv">Controlled load (CSV)</a>
+          <a href="benchmarks/emr_scaling_events.csv">Scaling timeline (CSV)</a>
+          <a href="benchmarks/figures/emr_runtime_vs_workers.png">Runtime graph</a>
+          <a href="benchmarks/figures/aws_latency_vs_ingestion_rate.png">Latency graph</a>
+          <a href="benchmarks/figures/emr_scaling_workers.png">Scaling graph</a>
+        </div>
+        <div class="tables">
+          <section>
+            <h2>Real EMR Batch Runs</h2>
+            <div class="table-wrap" id="emrBenchmarkTable"></div>
+          </section>
+          <section>
+            <h2>Controlled Kinesis Load</h2>
+            <div class="table-wrap" id="speedBenchmarkTable"></div>
+          </section>
+        </div>
+      </section>
     </main>
 
     <script>
-      const API_URL = "API_URL_PLACEHOLDER";
+      const LOCAL_PREVIEW_API_URL =
+        "https://rkagn1anvf.execute-api.us-east-1.amazonaws.com/latest";
+      const API_URL =
+        window.location.protocol === "file:"
+          ? LOCAL_PREVIEW_API_URL
+          : "API_URL_PLACEHOLDER";
       const columns = [
         ["symbol", "Symbol"],
         ["price", "Price"],
         ["return_5m_pct", "5m Return %"],
         ["quote_volume_5m", "5m Quote Vol"],
+        ["batch_mean_quote_volume_5m", "Historical Mean Vol"],
+        ["baseline_sample_count", "Batch Windows"],
         ["trend_score", "Trend Score"],
         ["spike_zscore", "Spike Z"],
         ["latency_ms", "Latency ms"]
@@ -206,9 +253,25 @@
         target.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
       }
 
+      function renderBenchmarkTable(targetId, rows, selectedColumns) {
+        const target = document.getElementById(targetId);
+        if (!rows.length) {
+          target.innerHTML = '<div class="empty">No benchmark rows available.</div>';
+          return;
+        }
+        const head = selectedColumns.map(([, label]) => `<th>${label}</th>`).join("");
+        const body = rows.map((row) => {
+          const cells = selectedColumns
+            .map(([key]) => `<td>${formatValue(key, row[key])}</td>`)
+            .join("");
+          return `<tr>${cells}</tr>`;
+        }).join("");
+        target.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      }
+
       async function loadLatest() {
         const status = document.getElementById("status");
-        if (!API_URL || API_URL === "API_URL_PLACEHOLDER") {
+        if (!API_URL || !API_URL.startsWith("https://")) {
           status.textContent = "Set the API Gateway URL in frontend/index.html before uploading to S3.";
           return;
         }
@@ -229,9 +292,49 @@
         }
       }
 
+      async function loadBenchmarks() {
+        const status = document.getElementById("benchmarkStatus");
+        if (window.location.protocol === "file:") {
+          status.textContent =
+            "Live market data is available locally. Open the deployed HTTPS dashboard for published AWS benchmark downloads and graphs.";
+          return;
+        }
+        try {
+          const response = await fetch("benchmarks/dashboard_benchmarks.json", {
+            cache: "no-store"
+          });
+          if (!response.ok) throw new Error(`benchmark data returned ${response.status}`);
+          const payload = await response.json();
+          renderBenchmarkTable("emrBenchmarkTable", payload.batch || [], [
+            ["worker_count", "Workers"],
+            ["median_runtime_seconds", "Median s"],
+            ["runtime_stdev_seconds", "Stddev s"],
+            ["speedup", "Speedup"],
+            ["parallel_efficiency", "Efficiency"],
+            ["records_per_second", "Records/s"]
+          ]);
+          renderBenchmarkTable("speedBenchmarkTable", payload.speed || [], [
+            ["target_ingestion_rate", "Target/s"],
+            ["achieved_throughput", "Achieved/s"],
+            ["p50_end_to_end_latency_ms", "p50 ms"],
+            ["p95_end_to_end_latency_ms", "p95 ms"],
+            ["p99_end_to_end_latency_ms", "p99 ms"],
+            ["failed_records", "Failures"]
+          ]);
+          const scaling = payload.scaling || {};
+          status.textContent =
+            `Real AWS results generated ${payload.generated_at}. ` +
+            `Auto scaling: ${scaling.initial_workers} → ` +
+            `${scaling.peak_running_workers} → ${scaling.final_workers} workers; ` +
+            `minimum YARN available ${Number(scaling.minimum_yarn_available_pct).toFixed(2)}%.`;
+        } catch (error) {
+          status.textContent = `Unable to load benchmark data: ${error.message}`;
+        }
+      }
+
       loadLatest();
+      loadBenchmarks();
       setInterval(loadLatest, 10000);
     </script>
   </body>
 </html>
-

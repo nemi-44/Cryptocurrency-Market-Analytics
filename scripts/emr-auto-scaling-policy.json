@@ -1,0 +1,66 @@
+{
+  "Constraints": {
+    "MinCapacity": 1,
+    "MaxCapacity": 4
+  },
+  "Rules": [
+    {
+      "Name": "scale-out-low-yarn-memory",
+      "Description": "Add one core worker when available YARN memory stays below 20 percent for two minutes.",
+      "Action": {
+        "SimpleScalingPolicyConfiguration": {
+          "AdjustmentType": "CHANGE_IN_CAPACITY",
+          "ScalingAdjustment": 1,
+          "CoolDown": 120
+        }
+      },
+      "Trigger": {
+        "CloudWatchAlarmDefinition": {
+          "ComparisonOperator": "LESS_THAN",
+          "EvaluationPeriods": 2,
+          "MetricName": "YARNMemoryAvailablePercentage",
+          "Namespace": "AWS/ElasticMapReduce",
+          "Period": 60,
+          "Statistic": "AVERAGE",
+          "Threshold": 20.0,
+          "Unit": "PERCENT",
+          "Dimensions": [
+            {
+              "Key": "JobFlowId",
+              "Value": "${emr.clusterId}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "Name": "scale-in-high-yarn-memory",
+      "Description": "Remove one core worker when available YARN memory stays above 75 percent for five minutes.",
+      "Action": {
+        "SimpleScalingPolicyConfiguration": {
+          "AdjustmentType": "CHANGE_IN_CAPACITY",
+          "ScalingAdjustment": -1,
+          "CoolDown": 300
+        }
+      },
+      "Trigger": {
+        "CloudWatchAlarmDefinition": {
+          "ComparisonOperator": "GREATER_THAN",
+          "EvaluationPeriods": 5,
+          "MetricName": "YARNMemoryAvailablePercentage",
+          "Namespace": "AWS/ElasticMapReduce",
+          "Period": 60,
+          "Statistic": "AVERAGE",
+          "Threshold": 75.0,
+          "Unit": "PERCENT",
+          "Dimensions": [
+            {
+              "Key": "JobFlowId",
+              "Value": "${emr.clusterId}"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

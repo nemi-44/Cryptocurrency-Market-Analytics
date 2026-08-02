@@ -66,14 +66,32 @@ def render_dashboard(payload: dict[str, list[dict[str, object]]], refresh_second
         st.dataframe(
             trending,
             use_container_width=True,
-            column_order=["symbol", "price", "return_5m_pct", "quote_volume_5m", "trend_score", "latency_ms"],
+            column_order=[
+                "symbol",
+                "price",
+                "return_5m_pct",
+                "quote_volume_5m",
+                "batch_mean_quote_volume_5m",
+                "baseline_sample_count",
+                "trend_score",
+                "latency_ms",
+            ],
         )
     with right:
         st.subheader("Abnormal Price Spikes")
         st.dataframe(
             spikes,
             use_container_width=True,
-            column_order=["symbol", "price", "return_5m_pct", "quote_volume_5m", "spike_zscore", "latency_ms"],
+            column_order=[
+                "symbol",
+                "price",
+                "return_5m_pct",
+                "quote_volume_5m",
+                "batch_mean_return_5m",
+                "baseline_sample_count",
+                "spike_zscore",
+                "latency_ms",
+            ],
         )
 
 
@@ -100,4 +118,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

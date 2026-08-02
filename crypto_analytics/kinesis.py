@@ -42,7 +42,9 @@ class KinesisPublisher:
         for record in records:
             batch.append(
                 {
-                    "Data": json.dumps(record, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+                    # Firehose concatenates source records in S3. A newline keeps
+                    # the raw archive valid JSON Lines for Spark and local tools.
+                    "Data": (json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8"),
                     "PartitionKey": str(record.get("symbol", "UNKNOWN")),
                 }
             )
@@ -67,4 +69,3 @@ class KinesisPublisher:
             retry_failed = int(retry_response.get("FailedRecordCount", 0))
             if retry_failed:
                 raise RuntimeError(f"Kinesis PutRecords failed for {retry_failed} records after retry")
-

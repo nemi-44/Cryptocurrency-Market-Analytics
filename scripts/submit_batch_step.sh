@@ -6,10 +6,14 @@ set -euo pipefail
 : "${INPUT_PATH:?Set INPUT_PATH, for example s3://bucket/historical/extracted/*/1m/*.csv}"
 : "${OUTPUT_PATH:?Set OUTPUT_PATH, for example s3://bucket/baselines/parquet/}"
 
-REGION="${AWS_REGION:-eu-west-1}"
-STEP_ARGS="[--deploy-mode,cluster,$CODE_S3_PATH,--input,$INPUT_PATH,--output,$OUTPUT_PATH"
+REGION="${AWS_REGION:-us-east-1}"
+SPARK_DEPLOY_MODE="${SPARK_DEPLOY_MODE:-client}"
+STEP_ARGS="[--deploy-mode,$SPARK_DEPLOY_MODE,$CODE_S3_PATH,--input,$INPUT_PATH,--output,$OUTPUT_PATH"
 if [[ -n "${JSON_OUTPUT_PATH:-}" ]]; then
   STEP_ARGS="$STEP_ARGS,--json-output,$JSON_OUTPUT_PATH"
+fi
+if [[ -n "${BATCH_VIEW_OUTPUT_PATH:-}" ]]; then
+  STEP_ARGS="$STEP_ARGS,--batch-view-output,$BATCH_VIEW_OUTPUT_PATH"
 fi
 STEP_ARGS="$STEP_ARGS]"
 

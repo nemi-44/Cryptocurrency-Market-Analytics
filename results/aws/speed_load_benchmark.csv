@@ -1,0 +1,4 @@
+data_source,environment,target_ingestion_rate,sent_records,successful_records,failed_records,send_elapsed_seconds,achieved_throughput,latency_samples,p50_end_to_end_latency_ms,p95_end_to_end_latency_ms,p99_end_to_end_latency_ms,minimum_latency_ms,maximum_latency_ms,symbols,started_at,ended_at
+synthetic-controlled-replay,aws-learner-lab,100,3000,3000,0,30.002266,99.99,143,567.0,734.0,1652.76,551.0,1725.0,5,2026-08-02T17:02:08.886098+00:00,2026-08-02T17:02:47.103961+00:00
+synthetic-controlled-replay,aws-learner-lab,500,15000,15000,0,30.003885,499.94,135,590.0,1574.8,2079.9,223.0,2085.0,5,2026-08-02T17:02:49.104501+00:00,2026-08-02T17:03:27.114332+00:00
+synthetic-controlled-replay,aws-learner-lab,1000,30000,30000,0,30.003539,999.88,134,1095.0,1593.0,1724.41,283.0,1732.0,5,2026-08-02T17:03:29.117882+00:00,2026-08-02T17:04:07.126232+00:00
